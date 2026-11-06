@@ -69,6 +69,7 @@ jobs:
           K="$RUNNER_TEMP/kotlinc/bin/kotlinc"
           CORE=$(ls app/src/main/java/com/handlecaddie/controller/core/*.kt)
           ok=0
+          mkdir -p out          # the Core test writes a file here
           for T in Core Extras Nav Round; do
             echo "=== $T"
             "$K" $CORE tools/${T}SelfTest.kt -cp tools/orgjson.jar -d "$RUNNER_TEMP/$T.jar" -nowarn
