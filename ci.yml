@@ -15,7 +15,11 @@ jobs:
         run: unzip -q -o HandleCaddie_Repo.zip -d src
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "17" }
-      - uses: android-actions/setup-android@v3
+      - name: Android SDK (already on the runner; just accept licences and make sure API 34 is there)
+        run: |
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" | tail -3
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.10.2" }
       - name: Build phone app and watch app
@@ -30,7 +34,7 @@ jobs:
           {
             echo "### Compile errors and warnings that matter"
             echo '```'
-            grep -E "^e: |error:|FAILED|What went wrong" -A2 build.log | head -150 || true
+            if [ -f build.log ]; then grep -E "^e: |error:|FAILED|What went wrong" -A2 build.log | head -150; else echo "(no build.log: the build step did not start - see the earlier steps)"; fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the log (send this to Claude if the build fails)
@@ -54,7 +58,7 @@ jobs:
       - name: Unpack the project (HandleCaddie_Repo.zip is the one file you upload)
         run: unzip -q -o HandleCaddie_Repo.zip -d src
       - uses: actions/setup-java@v5
-        with: { distribution: temurin, java-version: "17" }
+        with: { distribution: temurin, java-version: "21" }
       - name: Get the Kotlin compiler
         run: |
           curl -sSL -o kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip
