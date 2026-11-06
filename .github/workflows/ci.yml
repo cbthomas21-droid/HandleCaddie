@@ -1,0 +1,107 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:           # also lets you press "Run workflow" by hand
+
+jobs:
+  # ------------------------------------------------------------------ phone app + watch app: compile, and hand you installable files
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Unpack the project (HandleCaddie_Repo.zip is the one file you upload)
+        run: unzip -q -o HandleCaddie_Repo.zip -d src
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.10.2" }
+      - name: Build phone app and watch app
+        working-directory: src/android
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug :wear:assembleDebug --stacktrace --console=plain 2>&1 | tee build.log
+      - name: Show compile errors in the run summary
+        if: always()
+        working-directory: src/android
+        run: |
+          {
+            echo "### Compile errors and warnings that matter"
+            echo '```'
+            grep -E "^e: |error:|FAILED|What went wrong" -A2 build.log | head -150 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the log (send this to Claude if the build fails)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with: { name: android-build-log, path: src/android/build.log }
+      - name: Keep the installable files
+        uses: actions/upload-artifact@v5
+        with:
+          name: HandleCaddie-apks
+          path: |
+            src/android/app/build/outputs/apk/debug/app-debug.apk
+            src/android/wear/build/outputs/apk/debug/wear-debug.apk
+
+  # ------------------------------------------------------------------ the app's logic tests (the same four suites run here by hand)
+  app-logic-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Unpack the project (HandleCaddie_Repo.zip is the one file you upload)
+        run: unzip -q -o HandleCaddie_Repo.zip -d src
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "17" }
+      - name: Get the Kotlin compiler
+        run: |
+          curl -sSL -o kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip
+          unzip -q kotlin.zip -d "$RUNNER_TEMP"
+      - name: Compile and run Core, Extras, Nav and Round tests
+        working-directory: src/android
+        run: |
+          K="$RUNNER_TEMP/kotlinc/bin/kotlinc"
+          CORE=$(ls app/src/main/java/com/handlecaddie/controller/core/*.kt)
+          ok=0
+          for T in Core Extras Nav Round; do
+            echo "=== $T"
+            "$K" $CORE tools/${T}SelfTest.kt -cp tools/orgjson.jar -d "$RUNNER_TEMP/$T.jar" -nowarn
+            java -cp "$RUNNER_TEMP/$T.jar:tools/orgjson.jar:$RUNNER_TEMP/kotlinc/lib/kotlin-stdlib.jar" ${T}SelfTestKt | tail -3 || ok=1
+          done
+          exit $ok
+
+  # ------------------------------------------------------------------ cart + display firmware logic, and the cart firmware really compiled for the ESP32
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Unpack the project (HandleCaddie_Repo.zip is the one file you upload)
+        run: unzip -q -o HandleCaddie_Repo.zip -d src
+      - name: Host tests (plain C++)
+        run: |
+          set -e
+          for t in nav proto safety manual auth; do g++ -std=c++17 -Wall -o /tmp/t_$t src/cart/tests/test_$t.cpp && /tmp/t_$t | tail -1; done
+          g++ -std=c++17 -Wall -o /tmp/t_dg src/display/tests/test_display_gate.cpp && /tmp/t_dg | tail -1
+      - name: Shared files must be identical copies
+        run: |
+          set -e
+          for f in cart_auth.h cart_proto.h cart_logic.h; do cmp src/cart/$f src/cart/Cart/$f; done
+          cmp src/cart/cart_logic.h src/cart/BringUp/cart_logic.h
+          cmp src/cart/cart_auth.h src/display/cart_auth.h
+          cmp src/android/app/src/main/java/com/handlecaddie/controller/core/WatchProtocol.kt src/android/wear/src/main/java/com/handlecaddie/controller/core/WatchProtocol.kt
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Compile the cart firmware for the ESP32 (board "ESP32 Dev Module")
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+          arduino-cli lib install U8g2 ArduinoJson
+          arduino-cli compile --fqbn esp32:esp32:esp32 src/cart/Cart 2>&1 | tee cart_compile.log
+      - name: Keep the compile log
+        if: always()
+        uses: actions/upload-artifact@v5
+        with: { name: cart-compile-log, path: cart_compile.log }
